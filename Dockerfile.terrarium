@@ -1,0 +1,38 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY server/requirements.txt server/requirements.txt
+RUN pip install --no-cache-dir -r server/requirements.txt
+COPY server/ server/
+COPY data/ data/
+RUN python -m server.scripts.build_db
+
+# Official deployment runs three components together: the API (this
+# container's uvicorn), a real rendered frontend (Vite dev server), and the
+# harness. Our deployment ran the API alone for a long time -- server.py's
+# own /redirect handler's 302 target (session.start_page with HOST_ADDRESS
+# substituted) always pointed at this frontend, and it never existed, so an
+# agent that ever followed it (or reached for the many non-author-photo
+# images/videos/audio that only the frontend's `publicDir: ../data/public`
+# static serving exposes -- confirmed nothing else in server.py serves
+# them) hit a dead port. Installing Node + the frontend's own deps here so
+# capabilities.py can start `npm run dev` (matching REPRODUCTION.md's own
+# documented `cd frontend && npm ci && npm run dev`) as a third process
+# alongside uvicorn and the proxy, not a reimplementation.
+RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+COPY frontend/ frontend/
+RUN cd frontend && npm ci
+
+EXPOSE 8000
+# Bound to loopback only: the agent-facing reverse proxy
+# (agent_gateway_proxy.py) runs as a second process in this same container
+# and is the only thing that talks to this port. Binding 0.0.0.0 here made
+# the unfiltered real server reachable by any peer container on the same
+# per-trial Docker bridge network on port 8000 -- one port-number guess away
+# from the harness-internal endpoints (/init, /evaluate, /redirect, ...) the
+# proxy exists to hide. See agent_gateway_proxy.py's harness-token bypass
+# for how the host-side harness itself still reaches these endpoints without
+# this port being reachable from the agent's own workspace container.
+CMD ["python", "-m", "uvicorn", "server.server:app", "--host", "127.0.0.1", "--port", "8000"]

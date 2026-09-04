@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from server.catalogs import (
     MICRODIN_COMPANY_CATALOG,
@@ -165,6 +166,26 @@ STATE_RUNNING_MANUAL = "running_manual"
 STATE_COMPLETED = "completed"  # terminal state after /evaluate, /contact, or no more events
 
 app = FastAPI(title="Sentinel API")
+
+
+class RequestAuditMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        started = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed = round(time.monotonic() - started, 3)
+            print(f"[request] {request.method} {request.url.path} error elapsed={elapsed}s", flush=True)
+            raise
+        elapsed = round(time.monotonic() - started, 3)
+        print(
+            f"[request] {request.method} {request.url.path} status={response.status_code} elapsed={elapsed}s",
+            flush=True,
+        )
+        return response
+
+
+app.add_middleware(RequestAuditMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -537,7 +558,19 @@ async def contact_post(message: str = Form("")) -> HTMLResponse:
 
 @app.get("/close")
 async def close() -> JSONResponse:
+    global _state, _run_task
+    # Agents can discover this route through OpenAPI, but only the harness
+    # should be able to destroy the active session. Docker teardown already
+    # reclaims the process, so exposing a public state-destructive close is a
+    # direct source of later /evaluate -> 409 failures.
+    raise HTTPException(status_code=403, detail="/close is reserved for harness teardown")
+
+
+@app.post("/internal/close")
+async def internal_close(request: Request) -> JSONResponse:
     global _state, _session, _run_task
+    if request.headers.get("X-Sentinel-Internal") != "1":
+        raise HTTPException(status_code=403, detail="internal endpoint")
     if _run_task is not None and not _run_task.done():
         _run_task.cancel()
         try:
