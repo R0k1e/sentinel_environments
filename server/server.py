@@ -488,15 +488,15 @@ async def redirect(
     global _state, _run_task
     session = _require_session()
 
-    if _state not in (STATE_READY, STATE_RUNNING_MANUAL):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Wrong state: /redirect requires '{STATE_READY}' or '{STATE_RUNNING_MANUAL}'. Current: '{_state}'.",
-        )
-
-    _state = STATE_RUNNING_AUTO
-    session.start_wall_time = time.time()
-    _run_task = asyncio.create_task(_run_auto(session))
+    # Starting the simulation and serving the entry page are two separate
+    # jobs. Only the first admissible call does the former; every call does
+    # the latter, so an agent re-entering the app page gets the page rather
+    # than a 409 it cannot act on. The guard that matters -- never starting
+    # _run_auto twice -- is preserved exactly.
+    if _state in (STATE_READY, STATE_RUNNING_MANUAL):
+        _state = STATE_RUNNING_AUTO
+        session.start_wall_time = time.time()
+        _run_task = asyncio.create_task(_run_auto(session))
 
     redirect_origin = frontend_url or f"{request.url.scheme}://{request.url.hostname}:5173"
     if session.start_page:

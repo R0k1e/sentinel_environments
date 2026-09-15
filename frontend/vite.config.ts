@@ -11,7 +11,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 3000, // 3MB limit
   },
   server: {
-    allowedHosts: ["host.docker.internal"],
+    // Trial containers get a generated hostname, so no fixed list can match.
+    // The server is only reachable from its own trial's isolated network.
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: apiTarget,
